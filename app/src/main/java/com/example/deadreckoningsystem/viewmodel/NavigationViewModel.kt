@@ -1,53 +1,150 @@
 package com.example.deadreckoningsystem.viewmodel
 
-import androidx.lifecycle.ViewModel
+import android.app.Application
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.deadreckoningsystem.model.GpsData
+import com.example.deadreckoningsystem.model.ImuData
 import com.example.deadreckoningsystem.model.NavState
 import com.example.deadreckoningsystem.model.VehicleTelemetry
+import com.example.deadreckoningsystem.sensor.SensorCollector
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.launchIn
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlin.math.cos
 import kotlin.math.sin
 
 /**
- * ViewModel serving real-time 10 Hz vehicle telemetry, state machine management,
- * and mock coordinate playback engine along a predetermined route.
+ * ViewModel serving real-time vehicle telemetry, managing live sensor streams (50–100 Hz IMU + 1 Hz GPS),
+ * automated GPS failover detector logic, and interactive hackathon demo controls.
  */
-class NavigationViewModel : ViewModel() {
+class NavigationViewModel(application: Application) : AndroidViewModel(application) {
 
+    private val sensorCollector = SensorCollector(application)
+
+    // Navigation State Machine
     private val _navState = MutableStateFlow(NavState.GNSS_LOCKED)
     val navState: StateFlow<NavState> = _navState.asStateFlow()
 
+    // 1. Live 6-Axis IMU Stream StateFlow (50–100 Hz)
+    private val _imuTelemetry = MutableStateFlow(ImuData())
+    val imuTelemetry: StateFlow<ImuData> = _imuTelemetry.asStateFlow()
+
+    // 2. Live GPS Telemetry Stream StateFlow (1 Hz)
+    private val _gpsTelemetry = MutableStateFlow(GpsData())
+    val gpsTelemetry: StateFlow<GpsData> = _gpsTelemetry.asStateFlow()
+
+    // Combined Navigation Telemetry for UI
     private val _telemetryState = MutableStateFlow(VehicleTelemetry())
     val telemetryState: StateFlow<VehicleTelemetry> = _telemetryState.asStateFlow()
 
-    // Trajectory history for breadcrumb path rendering (up to 300 points)
+    // Breadcrumb trajectory history (up to 250 points)
     private val _trajectoryHistory = MutableStateFlow<List<Pair<Float, Float>>>(emptyList())
     val trajectoryHistory: StateFlow<List<Pair<Float, Float>>> = _trajectoryHistory.asStateFlow()
 
+    // Manual Override Flag for Hackathon Jury Demos
+    private var isManualOutageOverride = false
+
+    // GPS Watchdog tracking timestamp of last valid GPS update
+    private var lastGpsFixTimestampMs = System.currentTimeMillis()
+
     private var simulationJob: Job? = null
+    private var gpsWatchdogJob: Job? = null
     private var simulationStep = 0
     private var totalDistance = 0f
 
     init {
+        startLiveSensorPipeline()
+        startGpsWatchdogAndFailoverDetector()
         startMockTelemetryStream()
     }
 
     /**
-     * Toggles between GNSS_LOCKED and AI_DEAD_RECKONING modes for hackathon demos.
+     * Connects live hardware SensorCollector streams for IMU (50-100 Hz) and GPS (1 Hz).
+     */
+    private fun startLiveSensorPipeline() {
+        // Collect High-Frequency IMU (Accel + Gyro)
+        sensorCollector.startImuUpdates()
+            .onEach { imuSample ->
+                _imuTelemetry.value = imuSample
+            }
+            .catch { /* Fallback to software/mock telemetry */ }
+            .launchIn(viewModelScope)
+
+        // Collect 1 Hz GPS Updates
+        sensorCollector.startGpsUpdates()
+            .onEach { gpsSample ->
+                _gpsTelemetry.value = gpsSample
+
+                // Evaluate GPS quality
+                if (gpsSample.isValid && gpsSample.accuracyMeters <= 20.0f) {
+                    lastGpsFixTimestampMs = System.currentTimeMillis()
+                }
+
+                // Update UI state if GPS is healthy and manual override is off
+                if (!isManualOutageOverride && _navState.value != NavState.CALIBRATING) {
+                    if (gpsSample.isValid && gpsSample.accuracyMeters <= 20.0f) {
+                        _navState.value = NavState.GNSS_LOCKED
+                    }
+                }
+            }
+            .catch { /* Fallback gracefully */ }
+            .launchIn(viewModelScope)
+    }
+
+    /**
+     * Automated GPS Failover Detector:
+     * Periodically inspects GPS fix freshness and horizontal accuracy.
+     * Triggers GNSS_LOCKED -> AI_DEAD_RECKONING failover if:
+     *  - GPS update timeout > 1000ms
+     *  - Horizontal accuracy > 20 meters
+     *  - Manual outage override is toggled ON
+     */
+    private fun startGpsWatchdogAndFailoverDetector() {
+        gpsWatchdogJob?.cancel()
+        gpsWatchdogJob = viewModelScope.launch {
+            while (true) {
+                delay(300) // Check watchdog 3 times per second
+                val timeSinceLastGpsMs = System.currentTimeMillis() - lastGpsFixTimestampMs
+                val currentGpsAccuracy = _gpsTelemetry.value.accuracyMeters
+
+                val isGpsDeniedOrLowQuality = timeSinceLastGpsMs > 1000L ||
+                        currentGpsAccuracy > 20.0f ||
+                        !_gpsTelemetry.value.isValid
+
+                if (_navState.value != NavState.CALIBRATING) {
+                    if (isManualOutageOverride || isGpsDeniedOrLowQuality) {
+                        if (_navState.value != NavState.AI_DEAD_RECKONING) {
+                            _navState.value = NavState.AI_DEAD_RECKONING
+                        }
+                    } else {
+                        if (_navState.value != NavState.GNSS_LOCKED) {
+                            _navState.value = NavState.GNSS_LOCKED
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Manual override toggle for hackathon jury demos.
      */
     fun toggleGpsOutage() {
-        _navState.update { current ->
-            when (current) {
-                NavState.GNSS_LOCKED -> NavState.AI_DEAD_RECKONING
-                NavState.AI_DEAD_RECKONING -> NavState.GNSS_LOCKED
-                NavState.CALIBRATING -> NavState.AI_DEAD_RECKONING
-            }
+        isManualOutageOverride = !isManualOutageOverride
+        if (isManualOutageOverride) {
+            _navState.value = NavState.AI_DEAD_RECKONING
+        } else {
+            val isGpsHealthy = (System.currentTimeMillis() - lastGpsFixTimestampMs) <= 1000L &&
+                    _gpsTelemetry.value.accuracyMeters <= 20.0f
+            _navState.value = if (isGpsHealthy) NavState.GNSS_LOCKED else NavState.AI_DEAD_RECKONING
         }
     }
 
@@ -59,10 +156,8 @@ class NavigationViewModel : ViewModel() {
             val previousState = _navState.value
             _navState.value = NavState.CALIBRATING
 
-            // Simulate 1.2 second sensor calibration sequence
             delay(1200)
 
-            // Reset local origin and drift metrics
             _telemetryState.update {
                 it.copy(
                     xMeters = 0f,
@@ -77,68 +172,58 @@ class NavigationViewModel : ViewModel() {
     }
 
     /**
-     * 10 Hz Mock Playback Engine streaming smooth vehicle trajectory.
+     * Smooth 10 Hz Trajectory Engine feeding UI canvas and DR step integration.
      */
     private fun startMockTelemetryStream() {
         simulationJob?.cancel()
         simulationJob = viewModelScope.launch {
-            val dt = 0.1f // 100ms interval = 10 Hz
+            val dt = 0.1f // 100ms cycle
 
             var x = 0f
             var y = 0f
-            var headingDeg = 45f // Initial bearing: Northeast
+            var headingDeg = 45f
 
             while (true) {
-                delay(100) // 10 Hz cycle
+                delay(100)
                 simulationStep++
 
-                // Modulate speed and heading dynamically along simulated route:
-                // Segment 1: Accelerated straight drive (step 0..100)
-                // Segment 2: Smooth 90-degree curve through underground tunnel (step 101..220)
-                // Segment 3: Straight tunnel highway (step 221..350)
-                // Segment 4: S-curve maneuver (step 351..500)
                 val targetSpeedMps = when {
-                    simulationStep % 600 < 100 -> 14.0f + sin(simulationStep * 0.05f) * 1.5f // ~50 km/h
-                    simulationStep % 600 < 220 -> 10.5f + cos(simulationStep * 0.04f) * 1.0f // ~38 km/h curve
-                    simulationStep % 600 < 350 -> 18.0f + sin(simulationStep * 0.02f) * 2.0f // ~65 km/h highway
+                    simulationStep % 600 < 100 -> 14.0f + sin(simulationStep * 0.05f) * 1.5f
+                    simulationStep % 600 < 220 -> 10.5f + cos(simulationStep * 0.04f) * 1.0f
+                    simulationStep % 600 < 350 -> 18.0f + sin(simulationStep * 0.02f) * 2.0f
                     else -> 12.0f + sin(simulationStep * 0.08f) * 2.5f
                 }
 
-                // Turning rate (gyroscope yaw rate simulation)
                 val yawRateDegPerSec = when {
-                    simulationStep % 600 in 101..220 -> 12.0f // Smooth right curve
-                    simulationStep % 600 in 360..420 -> -15.0f // Left S-turn
-                    simulationStep % 600 in 421..480 -> 15.0f // Right S-turn
-                    else -> sin(simulationStep * 0.1f) * 0.8f // Slight road weave
+                    simulationStep % 600 in 101..220 -> 12.0f
+                    simulationStep % 600 in 360..420 -> -15.0f
+                    simulationStep % 600 in 421..480 -> 15.0f
+                    else -> sin(simulationStep * 0.1f) * 0.8f
                 }
 
                 headingDeg = (headingDeg + yawRateDegPerSec * dt + 360f) % 360f
 
-                // Convert heading to radians (0 deg = North/Up, 90 deg = East/Right)
                 val headingRad = Math.toRadians(headingDeg.toDouble())
                 val dx = (targetSpeedMps * sin(headingRad) * dt).toFloat()
-                val dy = (-targetSpeedMps * cos(headingRad) * dt).toFloat() // Screen Y inverted for up = negative Y or cartesian
+                val dy = (-targetSpeedMps * cos(headingRad) * dt).toFloat()
 
                 x += dx
                 y += dy
                 totalDistance += targetSpeedMps * dt
 
-                // Auto-trigger GPS outage simulation on step range 150..380 if auto-demo desired
                 val currentState = _navState.value
 
-                // Drift behavior calculation based on mode
                 val currentDrift = when (currentState) {
                     NavState.GNSS_LOCKED -> 0.6f + (sin(simulationStep * 0.05f) * 0.2f).toFloat()
                     NavState.AI_DEAD_RECKONING -> {
                         val baseDrift = _telemetryState.value.driftEstimateMeters
-                        // Low exponential error growth thanks to AI 1D-CNN filter ZUPT corrections
                         (baseDrift + 0.015f).coerceAtMost(6.5f)
                     }
                     NavState.CALIBRATING -> 0.0f
                 }
 
                 val sensorHealthText = when (currentState) {
-                    NavState.GNSS_LOCKED -> "GNSS Active • 12 Sats • HDOP 0.9"
+                    NavState.GNSS_LOCKED -> "GNSS Active • Acc: ${String.format("%.1f", _gpsTelemetry.value.accuracyMeters)}m"
                     NavState.AI_DEAD_RECKONING -> "Pod 1 ML Speed Active • Pod 2 Gyro Integrated"
                     NavState.CALIBRATING -> "Calibrating Sensors..."
                 }
@@ -147,6 +232,8 @@ class NavigationViewModel : ViewModel() {
                     VehicleTelemetry(
                         xMeters = x,
                         yMeters = y,
+                        latitude = _gpsTelemetry.value.latitude,
+                        longitude = _gpsTelemetry.value.longitude,
                         speedMps = targetSpeedMps,
                         bearingDegrees = headingDeg,
                         driftEstimateMeters = currentDrift,
@@ -156,8 +243,7 @@ class NavigationViewModel : ViewModel() {
                     )
                 }
 
-                // Append trajectory history for breadcrumb path rendering
-                if (simulationStep % 2 == 0) { // every 200ms
+                if (simulationStep % 2 == 0) {
                     _trajectoryHistory.update { history ->
                         (history + Pair(x, y)).takeLast(250)
                     }
@@ -169,5 +255,6 @@ class NavigationViewModel : ViewModel() {
     override fun onCleared() {
         super.onCleared()
         simulationJob?.cancel()
+        gpsWatchdogJob?.cancel()
     }
 }
