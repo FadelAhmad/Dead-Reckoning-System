@@ -1,12 +1,15 @@
 package com.example.deadreckoningsystem.sensor
 
+import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.pm.PackageManager
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
 import android.os.Looper
+import androidx.core.content.ContextCompat
 import com.example.deadreckoningsystem.model.GpsData
 import com.example.deadreckoningsystem.model.ImuData
 import com.google.android.gms.location.FusedLocationProviderClient
@@ -23,7 +26,7 @@ import kotlinx.coroutines.flow.callbackFlow
  * Service collector managing high-frequency hardware IMU sampling (50–100 Hz)
  * via Android SensorManager and 1 Hz location updates via FusedLocationProviderClient.
  */
-class SensorCollector(context: Context) {
+class SensorCollector(private val context: Context) {
 
     private val sensorManager: SensorManager? =
         context.applicationContext.getSystemService(Context.SENSOR_SERVICE) as? SensorManager
@@ -97,6 +100,25 @@ class SensorCollector(context: Context) {
      */
     @SuppressLint("MissingPermission")
     fun startGpsUpdates(): Flow<GpsData> = callbackFlow {
+        val hasFine = ContextCompat.checkSelfPermission(
+            context, Manifest.permission.ACCESS_FINE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+        val hasCoarse = ContextCompat.checkSelfPermission(
+            context, Manifest.permission.ACCESS_COARSE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+
+        if (!hasFine && !hasCoarse) {
+            trySend(
+                GpsData(
+                    accuracyMeters = 999f,
+                    isValid = false,
+                    timestampMs = System.currentTimeMillis()
+                )
+            )
+            close()
+            return@callbackFlow
+        }
+
         val locationRequest = LocationRequest.Builder(
             Priority.PRIORITY_HIGH_ACCURACY,
             1000L // 1 Hz update rate
@@ -128,7 +150,6 @@ class SensorCollector(context: Context) {
                 Looper.getMainLooper()
             )
         } catch (_: Exception) {
-            // Permission not granted or location unavailable
             trySend(
                 GpsData(
                     accuracyMeters = 999f,

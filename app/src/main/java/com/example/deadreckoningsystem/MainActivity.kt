@@ -9,7 +9,6 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
 import com.example.deadreckoningsystem.ui.NavigationScreen
@@ -21,7 +20,7 @@ class MainActivity : ComponentActivity() {
     private val locationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { _ ->
-        // Permissions handled; FusedLocationProviderClient & SensorManager will connect
+        // Permissions updated
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -34,13 +33,15 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = SlateDarkBg
                 ) {
-                    LaunchedEffect(Unit) {
-                        requestLocationPermissionsIfNeeded()
-                    }
                     NavigationScreen()
                 }
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        requestLocationPermissionsIfNeeded()
     }
 
     private fun requestLocationPermissionsIfNeeded() {
