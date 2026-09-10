@@ -46,7 +46,6 @@ import com.example.deadreckoningsystem.ui.theme.NavySurface
 import com.example.deadreckoningsystem.ui.theme.NeonCyan
 import com.example.deadreckoningsystem.ui.theme.NeonGreen
 import com.example.deadreckoningsystem.ui.theme.SlateBorder
-import com.example.deadreckoningsystem.ui.theme.TextMuted
 import com.example.deadreckoningsystem.ui.theme.TextPrimary
 import com.example.deadreckoningsystem.ui.theme.TextSecondary
 import java.util.Locale
@@ -139,7 +138,7 @@ fun NavigationHUD(
                     }
                 }
 
-                // Drift Confidence / Sensor Health Indicator
+                // Drift Confidence Indicator
                 Surface(
                     color = Color.Black.copy(alpha = 0.3f),
                     shape = RoundedCornerShape(12.dp),
@@ -170,13 +169,13 @@ fun NavigationHUD(
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // Bottom Row: Speed Display in km/h & Sensor Subtext
+            // Bottom Row: Speed Display in km/h & Production Status Text
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.Bottom
             ) {
-                // Large Speed Readout formatted to 1 decimal place
+                // Large Speed Readout
                 Row(
                     verticalAlignment = Alignment.Bottom
                 ) {
@@ -217,7 +216,7 @@ fun NavigationHUD(
                     )
                 }
 
-                // Pipeline Status Info Subtext
+                // Clean Production Status Text
                 Column(
                     horizontalAlignment = Alignment.End
                 ) {
@@ -225,17 +224,8 @@ fun NavigationHUD(
                         text = telemetry.sensorHealth,
                         style = MaterialTheme.typography.labelSmall.copy(
                             fontSize = 11.sp,
-                            fontWeight = FontWeight.Medium,
+                            fontWeight = FontWeight.Bold,
                             color = TextSecondary
-                        )
-                    )
-                    Spacer(modifier = Modifier.height(2.dp))
-                    Text(
-                        text = String.format(Locale.US, "Dist: %.0fm  •  Steps: %d", telemetry.totalDistanceMeters, telemetry.stepCount),
-                        style = MaterialTheme.typography.labelSmall.copy(
-                            fontSize = 10.sp,
-                            color = TextMuted,
-                            fontFamily = FontFamily.Monospace
                         )
                     )
                 }

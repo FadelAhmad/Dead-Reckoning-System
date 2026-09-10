@@ -11,6 +11,9 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import com.example.deadreckoningsystem.ui.NavigationScreen
 import com.example.deadreckoningsystem.ui.theme.DeadReckoningTheme
 import com.example.deadreckoningsystem.ui.theme.SlateDarkBg
@@ -27,6 +30,9 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
+        // Enable Immersive Fullscreen Mode (Hides status bar & navigation home bar)
+        hideSystemBars()
+
         setContent {
             DeadReckoningTheme {
                 Surface(
@@ -41,7 +47,15 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        hideSystemBars()
         requestLocationPermissionsIfNeeded()
+    }
+
+    private fun hideSystemBars() {
+        WindowCompat.getInsetsController(window, window.decorView).apply {
+            systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            hide(WindowInsetsCompat.Type.systemBars())
+        }
     }
 
     private fun requestLocationPermissionsIfNeeded() {

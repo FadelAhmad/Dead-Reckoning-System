@@ -33,7 +33,7 @@ class NavigationViewModel(application: Application) : AndroidViewModel(applicati
 
     private val sensorCollector = SensorCollector(application)
     val gpsDetector = GpsAvailabilityDetector(
-        maxStalenessMs = 2500L,
+        maxStalenessMs = 5000L, // 5 second staleness window for stationary fixes
         maxAccuracyMeters = 20.0f,
         debounceThreshold = 2
     )
@@ -60,8 +60,8 @@ class NavigationViewModel(application: Application) : AndroidViewModel(applicati
     private val _trajectoryHistory = MutableStateFlow<List<Pair<Float, Float>>>(emptyList())
     val trajectoryHistory: StateFlow<List<Pair<Float, Float>>> = _trajectoryHistory.asStateFlow()
 
-    // Manual Override Flag for Hackathon Jury Demos
-    private var isManualOutageOverride = false
+    // Manual Override Flag for Manual GPS Control
+    private var isManualGpsDisabled = false
 
     // Anchor origin for local Cartesian ENU projection (meters)
     private var anchorLatitude: Double? = null
@@ -145,7 +145,7 @@ class NavigationViewModel(application: Application) : AndroidViewModel(applicati
 
         // 2. Read GPS state & outage status
         val rawGps = _gpsTelemetry.value
-        val isGpsActive = gpsDetector.gpsAvailable.value && !isManualOutageOverride
+        val isGpsActive = gpsDetector.gpsAvailable.value && !isManualGpsDisabled
 
         val isGoodQualityGps = isGpsActive && rawGps.isValid && rawGps.accuracyMeters <= 20.0f
 
@@ -197,10 +197,11 @@ class NavigationViewModel(application: Application) : AndroidViewModel(applicati
 
         val driftMeters = sqrt(kf.P[0 * 9 + 0] + kf.P[1 * 9 + 1]).toFloat()
 
+        // Production-ready clean status text
         val sensorHealthText = if (isGpsActive) {
-            "GNSS Active • Acc: ${String.format("%.1f", rawGps.accuracyMeters)}m"
+            "GNSS High Accuracy • Active"
         } else {
-            "Pod 1 ML Speed Active • KF Blackout: ${String.format("%.1f", kf.timeInBlackout)}s"
+            "Dead Reckoning System • Active"
         }
 
         _telemetryState.update {
@@ -240,7 +241,7 @@ class NavigationViewModel(application: Application) : AndroidViewModel(applicati
      */
     private fun syncNavState() {
         if (_navState.value != NavState.CALIBRATING) {
-            val isGpsActive = gpsDetector.gpsAvailable.value && !isManualOutageOverride
+            val isGpsActive = gpsDetector.gpsAvailable.value && !isManualGpsDisabled
             val targetState = if (isGpsActive) NavState.GNSS_LOCKED else NavState.AI_DEAD_RECKONING
             if (_navState.value != targetState) {
                 _navState.value = targetState
@@ -249,10 +250,10 @@ class NavigationViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     /**
-     * Manual override toggle for hackathon jury demos.
+     * Manual toggle for "Use GPS" control button.
      */
-    fun toggleGpsOutage() {
-        isManualOutageOverride = !isManualOutageOverride
+    fun toggleUseGps() {
+        isManualGpsDisabled = !isManualGpsDisabled
         syncNavState()
     }
 

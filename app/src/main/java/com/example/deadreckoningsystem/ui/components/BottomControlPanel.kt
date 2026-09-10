@@ -7,14 +7,12 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.GpsFixed
 import androidx.compose.material.icons.filled.GpsOff
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.SatelliteAlt
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -26,43 +24,41 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.deadreckoningsystem.model.NavState
 import com.example.deadreckoningsystem.ui.theme.AmberWarning
 import com.example.deadreckoningsystem.ui.theme.NavySurface
-import com.example.deadreckoningsystem.ui.theme.NeonCyan
 import com.example.deadreckoningsystem.ui.theme.NeonGreen
-import com.example.deadreckoningsystem.ui.theme.RedOutage
 import com.example.deadreckoningsystem.ui.theme.SlateBorder
 import com.example.deadreckoningsystem.ui.theme.SlateDarkBg
+import com.example.deadreckoningsystem.ui.theme.TextMuted
 import com.example.deadreckoningsystem.ui.theme.TextPrimary
 
 /**
- * Floating Bottom Control Panel containing interactive buttons for hackathon jury demos:
- * 1. "Simulate GPS Outage": Toggles between GNSS LOCKED and AI DEAD RECKONING.
- * 2. "Recalibrate IMU": Resets origin reference frame and clears accumulation drift.
+ * Bottom Control Panel containing the manual "Use GPS" toggle button.
  */
 @Composable
 fun BottomControlPanel(
     navState: NavState,
-    onToggleGpsOutage: () -> Unit,
-    onRecalibrateImu: () -> Unit,
+    onToggleUseGps: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val isOutageActive = navState == NavState.AI_DEAD_RECKONING
+    val isGpsActive = navState == NavState.GNSS_LOCKED
 
-    val outageButtonBg by animateColorAsState(
-        targetValue = if (isOutageActive) RedOutage.copy(alpha = 0.25f) else AmberWarning.copy(alpha = 0.15f),
-        label = "OutageButtonBg"
+    val buttonBg by animateColorAsState(
+        targetValue = if (isGpsActive) NeonGreen.copy(alpha = 0.22f) else SlateDarkBg.copy(alpha = 0.7f),
+        label = "GpsButtonBg"
     )
 
-    val outageButtonBorder by animateColorAsState(
-        targetValue = if (isOutageActive) RedOutage else AmberWarning,
-        label = "OutageButtonBorder"
+    val buttonBorder by animateColorAsState(
+        targetValue = if (isGpsActive) NeonGreen else SlateBorder,
+        label = "GpsButtonBorder"
     )
+
+    val headerText = if (isGpsActive) "GPS ACTIVE" else "GPS INACTIVE"
+    val headerColor = if (isGpsActive) NeonGreen else AmberWarning
 
     Card(
         modifier = modifier
@@ -81,77 +77,47 @@ fun BottomControlPanel(
                 .fillMaxWidth()
         ) {
             Text(
-                text = "HACKATHON DEMO & FAILOVER CONTROLS",
+                text = headerText,
                 style = MaterialTheme.typography.labelSmall.copy(
                     fontWeight = FontWeight.Bold,
                     letterSpacing = 1.sp,
-                    color = NeonCyan
+                    color = headerColor
                 ),
                 modifier = Modifier.padding(bottom = 10.dp)
             )
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                horizontalArrangement = Arrangement.Center,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Button 1: Simulate GPS Outage Toggle
+                // "Use GPS" Toggle Button
                 OutlinedButton(
-                    onClick = onToggleGpsOutage,
-                    modifier = Modifier.weight(1f),
+                    onClick = onToggleUseGps,
+                    modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(14.dp),
                     colors = ButtonDefaults.outlinedButtonColors(
-                        containerColor = outageButtonBg,
+                        containerColor = buttonBg,
                         contentColor = TextPrimary
                     ),
-                    border = androidx.compose.foundation.BorderStroke(1.5.dp, outageButtonBorder)
+                    border = androidx.compose.foundation.BorderStroke(1.5.dp, buttonBorder)
                 ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.Center
                     ) {
                         Icon(
-                            imageVector = if (isOutageActive) Icons.Default.SatelliteAlt else Icons.Default.GpsOff,
-                            contentDescription = "Toggle Outage",
-                            tint = if (isOutageActive) NeonGreen else AmberWarning
+                            imageVector = if (isGpsActive) Icons.Default.GpsFixed else Icons.Default.GpsOff,
+                            contentDescription = "Toggle Use GPS",
+                            tint = if (isGpsActive) NeonGreen else TextMuted
                         )
-                        Spacer(modifier = Modifier.width(6.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = if (isOutageActive) "Restore GPS" else "Simulate GPS Outage",
+                            text = if (isGpsActive) "USE GPS: ON" else "USE GPS: OFF",
                             style = MaterialTheme.typography.labelMedium.copy(
                                 fontWeight = FontWeight.Bold,
-                                fontSize = 12.sp
-                            )
-                        )
-                    }
-                }
-
-                // Button 2: Recalibrate IMU
-                OutlinedButton(
-                    onClick = onRecalibrateImu,
-                    modifier = Modifier.weight(0.8f),
-                    shape = RoundedCornerShape(14.dp),
-                    colors = ButtonDefaults.outlinedButtonColors(
-                        containerColor = SlateDarkBg.copy(alpha = 0.6f),
-                        contentColor = TextPrimary
-                    ),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, NeonCyan.copy(alpha = 0.7f))
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Refresh,
-                            contentDescription = "Recalibrate IMU",
-                            tint = NeonCyan
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = "Recalibrate",
-                            style = MaterialTheme.typography.labelMedium.copy(
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 12.sp
+                                fontSize = 13.sp,
+                                color = if (isGpsActive) NeonGreen else TextMuted
                             )
                         )
                     }

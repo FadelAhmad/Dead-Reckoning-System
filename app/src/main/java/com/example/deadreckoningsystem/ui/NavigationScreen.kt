@@ -16,8 +16,8 @@ import com.example.deadreckoningsystem.ui.components.NavigationHUD
 import com.example.deadreckoningsystem.viewmodel.NavigationViewModel
 
 /**
- * Full-screen Jetpack Compose Navigation View integrating the interactive map canvas,
- * top status banner HUD, and bottom hackathon failover controls.
+ * Full-screen Jetpack Compose Navigation View integrating Google Maps vector tiles,
+ * top status banner HUD, and bottom manual GPS controls.
  */
 @Composable
 fun NavigationScreen(
@@ -30,7 +30,7 @@ fun NavigationScreen(
     Box(
         modifier = Modifier.fillMaxSize()
     ) {
-        // Fullscreen 2D Navigation Canvas Grid with street lines & breadcrumb path
+        // Fullscreen Navigation Map with vector tiles & trajectory path
         MapCanvas(
             telemetry = telemetry,
             navState = navState,
@@ -50,8 +50,7 @@ fun NavigationScreen(
         // Floating Bottom Control Panel Overlay
         BottomControlPanel(
             navState = navState,
-            onToggleGpsOutage = { viewModel.toggleGpsOutage() },
-            onRecalibrateImu = { viewModel.recalibrateImu() },
+            onToggleUseGps = { viewModel.toggleUseGps() },
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .padding(bottom = 16.dp)
