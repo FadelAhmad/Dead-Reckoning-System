@@ -26,6 +26,7 @@ fun NavigationScreen(
     val navState by viewModel.navState.collectAsStateWithLifecycle()
     val telemetry by viewModel.telemetryState.collectAsStateWithLifecycle()
     val trajectoryHistory by viewModel.trajectoryHistory.collectAsStateWithLifecycle()
+    val isManualGpsDisabled by viewModel.isManualGpsDisabled.collectAsStateWithLifecycle()
 
     Box(
         modifier = Modifier.fillMaxSize()
@@ -49,7 +50,7 @@ fun NavigationScreen(
 
         // Floating Bottom Control Panel Overlay
         BottomControlPanel(
-            navState = navState,
+            isManualGpsDisabled = isManualGpsDisabled,
             onToggleUseGps = { viewModel.toggleUseGps() },
             modifier = Modifier
                 .align(Alignment.BottomCenter)

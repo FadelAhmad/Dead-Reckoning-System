@@ -1,8 +1,5 @@
 package com.example.deadreckoningsystem.ui.components
 
-import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -14,7 +11,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -51,35 +48,20 @@ fun MapCanvas(
     trajectoryHistory: List<Pair<Float, Float>>,
     modifier: Modifier = Modifier
 ) {
-    val vehicleLatLng = LatLng(telemetry.latitude, telemetry.longitude)
+    val vehicleLatLng = remember(telemetry.latitude, telemetry.longitude) {
+        LatLng(telemetry.latitude, telemetry.longitude)
+    }
 
-    // Smooth position interpolation matching 10 Hz telemetry
     val cameraPositionState = rememberCameraPositionState {
         position = CameraPosition.fromLatLngZoom(vehicleLatLng, 17.5f)
     }
 
     val markerState = rememberMarkerState(position = vehicleLatLng)
 
-    // Smoothly animate vehicle marker position
-    val animatedLat by animateFloatAsState(
-        targetValue = telemetry.latitude.toFloat(),
-        animationSpec = tween(durationMillis = 100, easing = FastOutSlowInEasing),
-        label = "VehicleLatAnimation"
-    )
-    val animatedLon by animateFloatAsState(
-        targetValue = telemetry.longitude.toFloat(),
-        animationSpec = tween(durationMillis = 100, easing = FastOutSlowInEasing),
-        label = "VehicleLonAnimation"
-    )
-
-    val currentAnimatedLatLng = LatLng(animatedLat.toDouble(), animatedLon.toDouble())
-
-    LaunchedEffect(currentAnimatedLatLng) {
-        markerState.position = currentAnimatedLatLng
-        cameraPositionState.animate(
-            CameraUpdateFactory.newLatLng(currentAnimatedLatLng),
-            durationMs = 100
-        )
+    // Non-blocking camera and marker position updates
+    LaunchedEffect(vehicleLatLng) {
+        markerState.position = vehicleLatLng
+        cameraPositionState.move(CameraUpdateFactory.newLatLng(vehicleLatLng))
     }
 
     Box(modifier = modifier.fillMaxSize()) {
@@ -100,8 +82,10 @@ fun MapCanvas(
         ) {
             // Trajectory Polyline Path
             if (trajectoryHistory.size > 1) {
-                val polylinePoints = trajectoryHistory.map { (x, y) ->
-                    enuMetersToLatLon(x.toDouble(), y.toDouble(), telemetry.latitude, telemetry.longitude)
+                val polylinePoints = remember(trajectoryHistory) {
+                    trajectoryHistory.map { (x, y) ->
+                        enuMetersToLatLon(x.toDouble(), y.toDouble(), telemetry.latitude, telemetry.longitude)
+                    }
                 }
 
                 Polyline(

@@ -22,7 +22,7 @@
         <!-- Google Maps API Key -->
         <meta-data
             android:name="com.google.android.geo.API_KEY"
-            android:value="AIzaSyDemoKeyForDeadReckoningSystem_replaceWithYourKey" />
+            android:value="AIzaSyDtr0W_0pDa6rZLja-8bNpVnf3zwk1eyRM" />
 
         <activity
             android:name="com.example.deadreckoningsystem.MainActivity"

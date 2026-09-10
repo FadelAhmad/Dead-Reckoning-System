@@ -27,7 +27,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.example.deadreckoningsystem.model.NavState
 import com.example.deadreckoningsystem.ui.theme.AmberWarning
 import com.example.deadreckoningsystem.ui.theme.NavySurface
 import com.example.deadreckoningsystem.ui.theme.NeonGreen
@@ -41,11 +40,12 @@ import com.example.deadreckoningsystem.ui.theme.TextPrimary
  */
 @Composable
 fun BottomControlPanel(
-    navState: NavState,
+    isManualGpsDisabled: Boolean,
     onToggleUseGps: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val isGpsActive = navState == NavState.GNSS_LOCKED
+    // If NOT disabled manually, the user WANTS to use GPS.
+    val isGpsActive = !isManualGpsDisabled
 
     val buttonBg by animateColorAsState(
         targetValue = if (isGpsActive) NeonGreen.copy(alpha = 0.22f) else SlateDarkBg.copy(alpha = 0.7f),

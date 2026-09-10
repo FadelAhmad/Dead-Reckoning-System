@@ -60,8 +60,9 @@ class NavigationViewModel(application: Application) : AndroidViewModel(applicati
     private val _trajectoryHistory = MutableStateFlow<List<Pair<Float, Float>>>(emptyList())
     val trajectoryHistory: StateFlow<List<Pair<Float, Float>>> = _trajectoryHistory.asStateFlow()
 
-    // Manual Override Flag for Manual GPS Control
-    private var isManualGpsDisabled = false
+    // Manual Override Flag for Manual GPS Control - EXPOSED TO UI
+    private val _isManualGpsDisabled = MutableStateFlow(false)
+    val isManualGpsDisabled: StateFlow<Boolean> = _isManualGpsDisabled.asStateFlow()
 
     // Anchor origin for local Cartesian ENU projection (meters)
     private var anchorLatitude: Double? = null
@@ -145,7 +146,7 @@ class NavigationViewModel(application: Application) : AndroidViewModel(applicati
 
         // 2. Read GPS state & outage status
         val rawGps = _gpsTelemetry.value
-        val isGpsActive = gpsDetector.gpsAvailable.value && !isManualGpsDisabled
+        val isGpsActive = gpsDetector.gpsAvailable.value && !_isManualGpsDisabled.value
 
         val isGoodQualityGps = isGpsActive && rawGps.isValid && rawGps.accuracyMeters <= 20.0f
 
@@ -241,7 +242,7 @@ class NavigationViewModel(application: Application) : AndroidViewModel(applicati
      */
     private fun syncNavState() {
         if (_navState.value != NavState.CALIBRATING) {
-            val isGpsActive = gpsDetector.gpsAvailable.value && !isManualGpsDisabled
+            val isGpsActive = gpsDetector.gpsAvailable.value && !_isManualGpsDisabled.value
             val targetState = if (isGpsActive) NavState.GNSS_LOCKED else NavState.AI_DEAD_RECKONING
             if (_navState.value != targetState) {
                 _navState.value = targetState
@@ -253,7 +254,7 @@ class NavigationViewModel(application: Application) : AndroidViewModel(applicati
      * Manual toggle for "Use GPS" control button.
      */
     fun toggleUseGps() {
-        isManualGpsDisabled = !isManualGpsDisabled
+        _isManualGpsDisabled.value = !_isManualGpsDisabled.value
         syncNavState()
     }
 
