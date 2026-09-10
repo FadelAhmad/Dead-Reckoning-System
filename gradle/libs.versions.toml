@@ -11,7 +11,10 @@ composeBom = "2024.09.00"
 activityCompose = "1.9.2"
 lifecycleViewmodelCompose = "2.8.5"
 playServicesLocation = "21.3.0"
-tensorflowLite = "2.17.0"
+playServicesMaps = "19.0.0"
+mapsCompose = "6.1.1"
+playServicesTflite = "16.5.0"
+tensorflowLiteApi = "2.16.1"
 graphicsPath = "1.1.0"
 
 [libraries]
@@ -23,7 +26,11 @@ androidx-appcompat = { group = "androidx.appcompat", name = "appcompat", version
 material = { group = "com.google.android.material", name = "material", version.ref = "material" }
 
 play-services-location = { group = "com.google.android.gms", name = "play-services-location", version.ref = "playServicesLocation" }
-tensorflow-lite = { group = "org.tensorflow", name = "tensorflow-lite", version.ref = "tensorflowLite" }
+play-services-maps = { group = "com.google.android.gms", name = "play-services-maps", version.ref = "playServicesMaps" }
+maps-compose = { group = "com.google.maps.android", name = "maps-compose", version.ref = "mapsCompose" }
+
+play-services-tflite-java = { group = "com.google.android.gms", name = "play-services-tflite-java", version.ref = "playServicesTflite" }
+tensorflow-lite-api = { group = "org.tensorflow", name = "tensorflow-lite-api", version.ref = "tensorflowLiteApi" }
 androidx-graphics-path = { group = "androidx.graphics", name = "graphics-path", version.ref = "graphicsPath" }
 
 androidx-compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "composeBom" }

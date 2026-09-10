@@ -45,12 +45,18 @@ android {
     }
 }
 
+configurations.all {
+    exclude(group = "androidx.graphics", module = "graphics-path")
+}
+
 dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.appcompat)
     implementation(libs.material)
     implementation(libs.play.services.location)
-    implementation(libs.tensorflow.lite)
+    implementation(libs.play.services.maps)
+    implementation(libs.maps.compose)
+    implementation(libs.play.services.tflite.java)
     implementation(libs.androidx.graphics.path)
 
     implementation(platform(libs.androidx.compose.bom))

@@ -2,21 +2,22 @@ package com.example.deadreckoningsystem.ml
 
 import android.content.Context
 import com.example.deadreckoningsystem.model.ImuData
-import org.tensorflow.lite.Interpreter
+import com.google.android.gms.tflite.java.TfLite
+import org.tensorflow.lite.InterpreterApi
+import org.tensorflow.lite.InterpreterFactory
 import java.io.FileInputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.channels.FileChannel
-import kotlin.math.expm1
 
 /**
- * TFLite Model Wrapper for `imu_speed_prior_transformer.tflite`.
+ * Play Services TFLite Model Wrapper for `imu_speed_prior_transformer.tflite`.
  * Evaluates rolling windows of 6-axis IMU features to predict forward vehicle speed (m/s)
  * and optional learned measurement covariance (R_speed).
  */
 class SpeedPriorInference(context: Context, modelAssetPath: String = "imu_speed_prior_transformer.tflite") {
 
-    private var interpreter: Interpreter? = null
+    private var interpreter: InterpreterApi? = null
     private val windowSize = 10 // Rolling IMU window size
     private val featureSize = 6 // [acc_fwd, acc_lat, acc_vert, gyro_yaw, gyro_pitch, gyro_roll]
 
@@ -24,11 +25,13 @@ class SpeedPriorInference(context: Context, modelAssetPath: String = "imu_speed_
 
     init {
         try {
-            val modelBuffer = loadModelFile(context, modelAssetPath)
-            val options = Interpreter.Options().apply {
-                setNumThreads(2)
+            TfLite.initialize(context).addOnSuccessListener {
+                try {
+                    val modelBuffer = loadModelFile(context, modelAssetPath)
+                    val options = InterpreterApi.Options()
+                    interpreter = InterpreterFactory().create(modelBuffer, options)
+                } catch (_: Exception) {}
             }
-            interpreter = Interpreter(modelBuffer, options)
         } catch (_: Exception) {
             interpreter = null
         }
@@ -64,7 +67,6 @@ class SpeedPriorInference(context: Context, modelAssetPath: String = "imu_speed_
         }
 
         try {
-            // Shape: [1, windowSize, featureSize] or [1, windowSize * featureSize]
             val inputBuffer = ByteBuffer.allocateDirect(1 * windowSize * featureSize * 4).apply {
                 order(ByteOrder.nativeOrder())
             }
@@ -80,17 +82,21 @@ class SpeedPriorInference(context: Context, modelAssetPath: String = "imu_speed_
             inputBuffer.rewind()
 
             val outputBuffer = Array(1) { FloatArray(2) } // [predicted_speed_kmh, r_speed_log_val]
-            interp.run(inputBuffer, outputBuffer)
+            val outputs = HashMap<Int, Any>()
+            outputs[0] = outputBuffer
+
+            val inputs = arrayOf<Any>(inputBuffer)
+            interp.runForMultipleInputsOutputs(inputs, outputs)
 
             val predKmh = outputBuffer[0][0].coerceAtLeast(0.0f)
             val predMps = predKmh / 3.6f
 
             val rSpeedVal = if (outputBuffer[0].size > 1) {
                 val logR = outputBuffer[0][1]
-                val valR = expm1(logR.toDouble()).toFloat()
+                val valR = Math.expm1(logR.toDouble()).toFloat()
                 (valR * valR).coerceIn(0.1f, 100.0f)
             } else {
-                64.0f // 8.0^2 fallback
+                64.0f
             }
 
             return Pair(predMps, rSpeedVal)
