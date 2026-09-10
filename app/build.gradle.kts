@@ -51,6 +51,7 @@ dependencies {
     implementation(libs.material)
     implementation(libs.play.services.location)
     implementation(libs.tensorflow.lite)
+    implementation(libs.androidx.graphics.path)
 
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.compose.ui)

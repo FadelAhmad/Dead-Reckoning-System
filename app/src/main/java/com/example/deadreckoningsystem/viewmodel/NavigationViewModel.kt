@@ -3,10 +3,13 @@ package com.example.deadreckoningsystem.viewmodel
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.deadreckoningsystem.filter.KalmanFilter
+import com.example.deadreckoningsystem.ml.SpeedPriorInference
 import com.example.deadreckoningsystem.model.GpsData
 import com.example.deadreckoningsystem.model.ImuData
 import com.example.deadreckoningsystem.model.NavState
 import com.example.deadreckoningsystem.model.VehicleTelemetry
+import com.example.deadreckoningsystem.sensor.GpsAvailabilityDetector
 import com.example.deadreckoningsystem.sensor.SensorCollector
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -18,16 +21,24 @@ import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlin.math.abs
 import kotlin.math.cos
-import kotlin.math.sin
+import kotlin.math.sqrt
 
 /**
- * Production NavigationViewModel driving real hardware GPS and IMU sensor data.
- * Eliminates artificial route loops and provides automated failover to Pod 1/2 Dead Reckoning.
+ * Production NavigationViewModel driving real hardware GPS and IMU sensor data
+ * through a single, unified 9-State Extended Kalman Filter pipeline.
  */
 class NavigationViewModel(application: Application) : AndroidViewModel(application) {
 
     private val sensorCollector = SensorCollector(application)
+    val gpsDetector = GpsAvailabilityDetector(
+        maxStalenessMs = 2500L,
+        maxAccuracyMeters = 20.0f,
+        debounceThreshold = 2
+    )
+    val kf = KalmanFilter()
+    private val speedInference = SpeedPriorInference(application)
 
     // Navigation State Machine
     private val _navState = MutableStateFlow(NavState.GNSS_LOCKED)
@@ -52,39 +63,34 @@ class NavigationViewModel(application: Application) : AndroidViewModel(applicati
     // Manual Override Flag for Hackathon Jury Demos
     private var isManualOutageOverride = false
 
-    // GPS Watchdog tracking timestamp of last valid GPS update
-    private var lastGpsFixTimestampMs = 0L
-
     // Anchor origin for local Cartesian ENU projection (meters)
     private var anchorLatitude: Double? = null
     private var anchorLongitude: Double? = null
 
-    // Last known valid position anchors for smooth DR continuation
-    private var lastValidGpsLat = 28.6139
-    private var lastValidGpsLon = 77.2090
-    private var currentX = 0f
-    private var currentY = 0f
-    private var currentHeading = 0f
-    private var drAccumulatedDistance = 0f
-    private var drStepCount = 0L
+    // Rolling variance history for ZUPT detection
+    private val accelHistory = ArrayDeque<Float>()
+    private val gyroHistory = ArrayDeque<Float>()
 
+    private var lastImuTimestampNs: Long = 0L
     private var gpsWatchdogJob: Job? = null
-    private var deadReckoningJob: Job? = null
 
     init {
         startLiveSensorPipeline()
-        startGpsWatchdogAndFailoverDetector()
-        startDeadReckoningEngine()
+        startGpsWatchdog()
     }
 
     /**
      * Connects live hardware SensorCollector streams for IMU (50-100 Hz) and GPS (1 Hz).
      */
     private fun startLiveSensorPipeline() {
-        // High-Frequency IMU Sampling
+        // High-Frequency IMU Sampling -> Continuous KF Execution
         sensorCollector.startImuUpdates()
             .onEach { imuSample ->
                 _imuTelemetry.value = imuSample
+                speedInference.pushImuSample(imuSample)
+
+                // Single unified KF tick execution per IMU sample
+                processImuSample(imuSample)
             }
             .catch { /* Silent fallback */ }
             .launchIn(viewModelScope)
@@ -94,155 +100,150 @@ class NavigationViewModel(application: Application) : AndroidViewModel(applicati
             .onEach { gpsSample ->
                 _gpsTelemetry.value = gpsSample
 
-                val isHealthyFix = gpsSample.isValid && gpsSample.accuracyMeters <= 20.0f
-                if (isHealthyFix) {
-                    lastGpsFixTimestampMs = System.currentTimeMillis()
-                    lastValidGpsLat = gpsSample.latitude
-                    lastValidGpsLon = gpsSample.longitude
+                // Evaluate GPS quality and debounce state through GpsAvailabilityDetector
+                val (isGoodQuality, _) = gpsDetector.processGpsFix(gpsSample)
 
-                    // Initialize reference ENU origin on first valid GPS fix
-                    if (anchorLatitude == null || anchorLongitude == null) {
-                        anchorLatitude = gpsSample.latitude
-                        anchorLongitude = gpsSample.longitude
-                    }
-
-                    // In GNSS_LOCKED mode, update canvas position strictly from live GPS coordinates
-                    if (_navState.value == NavState.GNSS_LOCKED && !isManualOutageOverride) {
-                        val (x, y) = latLonToEnuMeters(
-                            lat = gpsSample.latitude,
-                            lon = gpsSample.longitude,
-                            refLat = anchorLatitude!!,
-                            refLon = anchorLongitude!!
-                        )
-
-                        currentX = x
-                        currentY = y
-                        currentHeading = gpsSample.bearingDegrees
-
-                        _telemetryState.update {
-                            VehicleTelemetry(
-                                xMeters = currentX,
-                                yMeters = currentY,
-                                latitude = gpsSample.latitude,
-                                longitude = gpsSample.longitude,
-                                speedMps = gpsSample.speedMps,
-                                bearingDegrees = currentHeading,
-                                driftEstimateMeters = gpsSample.accuracyMeters.coerceAtMost(2.0f),
-                                sensorHealth = "GNSS Active • Acc: ${String.format("%.1f", gpsSample.accuracyMeters)}m",
-                                stepCount = drStepCount,
-                                totalDistanceMeters = drAccumulatedDistance
-                            )
-                        }
-
-                        appendTrajectoryPoint(currentX, currentY)
-                    }
+                // Initialize ENU origin on first valid GPS fix
+                if (isGoodQuality && (anchorLatitude == null || anchorLongitude == null)) {
+                    anchorLatitude = gpsSample.latitude
+                    anchorLongitude = gpsSample.longitude
+                    kf.reset(0.0, 0.0)
                 }
+
+                // Update UI Navigation State Machine
+                syncNavState()
             }
             .catch { /* Silent fallback */ }
             .launchIn(viewModelScope)
     }
 
     /**
-     * Automatic Outage Detector & GPS Reacquisition Watchdog:
-     * Monitors incoming GPS packet freshness and accuracy.
-     * Transitions GNSS_LOCKED <-> AI_DEAD_RECKONING seamlessly.
+     * Ticks the 9D Kalman Filter on every high-frequency IMU sample.
      */
-    private fun startGpsWatchdogAndFailoverDetector() {
+    private fun processImuSample(imuSample: ImuData) {
+        val nowNs = imuSample.timestampNs
+        if (lastImuTimestampNs == 0L) {
+            lastImuTimestampNs = nowNs
+            return
+        }
+
+        val dt = ((nowNs - lastImuTimestampNs) / 1e9).coerceIn(0.005, 0.05) // 5ms..50ms
+        lastImuTimestampNs = nowNs
+
+        // 1. ZUPT Stationary Detection from rolling variance
+        val accMag = sqrt((imuSample.accelX * imuSample.accelX + imuSample.accelY * imuSample.accelY + imuSample.accelZ * imuSample.accelZ).toDouble()).toFloat()
+        accelHistory.addLast(accMag)
+        if (accelHistory.size > 10) accelHistory.removeFirst()
+
+        val gyroMag = sqrt((imuSample.gyroX * imuSample.gyroX + imuSample.gyroY * imuSample.gyroY + imuSample.gyroZ * imuSample.gyroZ).toDouble()).toFloat()
+        gyroHistory.addLast(gyroMag)
+        if (gyroHistory.size > 10) gyroHistory.removeFirst()
+
+        val accVar = calculateVariance(accelHistory)
+        val gyroVar = calculateVariance(gyroHistory)
+        val stationary = accVar < 0.15f && gyroVar < 0.03f && abs(accMag - 9.81f) < 1.0f
+
+        // 2. Read GPS state & outage status
+        val rawGps = _gpsTelemetry.value
+        val isGpsActive = gpsDetector.gpsAvailable.value && !isManualOutageOverride
+
+        val isGoodQualityGps = isGpsActive && rawGps.isValid && rawGps.accuracyMeters <= 20.0f
+
+        // Convert GPS lat/lon to local ENU meters relative to session origin
+        val (gpsPx, gpsPy) = if (anchorLatitude != null && anchorLongitude != null) {
+            latLonToEnuMeters(rawGps.latitude, rawGps.longitude, anchorLatitude!!, anchorLongitude!!)
+        } else {
+            Pair(0.0, 0.0)
+        }
+
+        // 3. TFLite Speed Inference (only evaluated during outage when not stationary)
+        val (predictedSpeedMps, rSpeedVar) = if (!isGpsActive && !stationary) {
+            speedInference.predictSpeedMps()
+        } else {
+            Pair(null, 64.0f)
+        }
+
+        val rawYawRad = Math.atan2(imuSample.accelY.toDouble(), imuSample.accelX.toDouble())
+
+        // 4. Tick Kalman Filter with continuous 5-branch logic
+        kf.tick(
+            dt = dt,
+            imuData = imuSample,
+            rawYawRad = rawYawRad,
+            stationary = stationary,
+            gpsAvailable = isGpsActive,
+            isGoodQualityGps = isGoodQualityGps,
+            isDistinctGpsFix = true,
+            gpsPx = gpsPx,
+            gpsPy = gpsPy,
+            rGpsVariance = (rawGps.accuracyMeters * rawGps.accuracyMeters).toDouble().coerceAtLeast(25.0),
+            predictedSpeedMps = predictedSpeedMps,
+            rSpeedVariance = rSpeedVar.toDouble()
+        )
+
+        // 5. Update UI Telemetry State ONCE per tick from KF State Vector
+        val px = kf.x[0].toFloat()
+        val py = kf.x[1].toFloat()
+        val vx = kf.x[3]
+        val vy = kf.x[4]
+        val speedMps = sqrt(vx * vx + vy * vy).toFloat()
+        val bearingDeg = (Math.toDegrees(Math.atan2(vy, vx)).toFloat() + 360f) % 360f
+
+        val (currentLat, currentLon) = if (anchorLatitude != null && anchorLongitude != null) {
+            enuMetersToLatLon(px.toDouble(), py.toDouble(), anchorLatitude!!, anchorLongitude!!)
+        } else {
+            Pair(rawGps.latitude, rawGps.longitude)
+        }
+
+        val driftMeters = sqrt(kf.P[0 * 9 + 0] + kf.P[1 * 9 + 1]).toFloat()
+
+        val sensorHealthText = if (isGpsActive) {
+            "GNSS Active • Acc: ${String.format("%.1f", rawGps.accuracyMeters)}m"
+        } else {
+            "Pod 1 ML Speed Active • KF Blackout: ${String.format("%.1f", kf.timeInBlackout)}s"
+        }
+
+        _telemetryState.update {
+            VehicleTelemetry(
+                xMeters = px,
+                yMeters = py,
+                latitude = currentLat,
+                longitude = currentLon,
+                speedMps = speedMps,
+                bearingDegrees = bearingDeg,
+                driftEstimateMeters = driftMeters,
+                sensorHealth = sensorHealthText,
+                stepCount = kf.nGpsRejected,
+                totalDistanceMeters = sqrt((px * px + py * py).toDouble()).toFloat()
+            )
+        }
+
+        appendTrajectoryPoint(px, py)
+    }
+
+    /**
+     * Periodic watchdog checking GPS fix staleness.
+     */
+    private fun startGpsWatchdog() {
         gpsWatchdogJob?.cancel()
         gpsWatchdogJob = viewModelScope.launch {
             while (true) {
-                delay(200) // Check 5 times per second
-                val now = System.currentTimeMillis()
-                val timeSinceLastGpsMs = if (lastGpsFixTimestampMs == 0L) 9999L else now - lastGpsFixTimestampMs
-                val currentGpsAccuracy = _gpsTelemetry.value.accuracyMeters
-
-                // Trigger outage if no update for > 1500ms OR accuracy > 20m OR manual override is ON
-                val isGpsDeniedOrLowQuality = timeSinceLastGpsMs > 1500L ||
-                        currentGpsAccuracy > 20.0f ||
-                        !_gpsTelemetry.value.isValid
-
-                if (_navState.value != NavState.CALIBRATING) {
-                    if (isManualOutageOverride || isGpsDeniedOrLowQuality) {
-                        if (_navState.value != NavState.AI_DEAD_RECKONING) {
-                            // Anchor DR starting point to last known valid GPS location
-                            _navState.value = NavState.AI_DEAD_RECKONING
-                        }
-                    } else {
-                        // GPS Reacquisition: healthy GPS packets return (accuracy <= 15m and timeout < 1000ms)
-                        if (currentGpsAccuracy <= 15.0f && timeSinceLastGpsMs < 1000L) {
-                            if (_navState.value != NavState.GNSS_LOCKED) {
-                                _navState.value = NavState.GNSS_LOCKED
-                            }
-                        }
-                    }
-                }
+                delay(300)
+                gpsDetector.checkStalenessWatchdog()
+                syncNavState()
             }
         }
     }
 
     /**
-     * Pod 2 Kinematics & DR Integration Engine:
-     * When NavState == AI_DEAD_RECKONING, integrates forward speed (Pod 1 AI prediction / IMU estimation)
-     * with gyroscope yaw rate relative to last known valid GPS anchor coordinates.
+     * Synchronizes UI NavState state machine from GpsAvailabilityDetector.
      */
-    private fun startDeadReckoningEngine() {
-        deadReckoningJob?.cancel()
-        deadReckoningJob = viewModelScope.launch {
-            val dt = 0.1f // 100ms integration step = 10 Hz
-            var drDriftAccumulator = 0.8f
-
-            while (true) {
-                delay(100)
-
-                if (_navState.value == NavState.AI_DEAD_RECKONING) {
-                    drStepCount++
-
-                    // Integrated Gyro yaw rate from live IMU hardware
-                    val gyroYawRadSec = _imuTelemetry.value.gyroZ
-                    val gyroYawDegSec = Math.toDegrees(gyroYawRadSec.toDouble()).toFloat()
-
-                    // Update heading smoothly from gyroscope integration
-                    if (Math.abs(gyroYawDegSec) > 0.02f) {
-                        currentHeading = (currentHeading + gyroYawDegSec * dt + 360f) % 360f
-                    }
-
-                    // Pod 1 ML Speed prediction fallback / IMU acceleration estimation
-                    val accelMagnitude = Math.sqrt(
-                        (_imuTelemetry.value.accelX * _imuTelemetry.value.accelX +
-                                _imuTelemetry.value.accelY * _imuTelemetry.value.accelY).toDouble()
-                    ).toFloat()
-
-                    // Forward speed estimation (m/s) with Zero Velocity Updates (ZUPT)
-                    val predictedSpeedMps = if (accelMagnitude < 0.15f) 0f else (accelMagnitude * 1.2f).coerceAtMost(25.0f)
-
-                    val headingRad = Math.toRadians(currentHeading.toDouble())
-                    val dx = (predictedSpeedMps * sin(headingRad) * dt).toFloat()
-                    val dy = (-predictedSpeedMps * cos(headingRad) * dt).toFloat()
-
-                    currentX += dx
-                    currentY += dy
-                    drAccumulatedDistance += predictedSpeedMps * dt
-                    drDriftAccumulator = (drDriftAccumulator + 0.012f).coerceAtMost(8.0f)
-
-                    _telemetryState.update {
-                        VehicleTelemetry(
-                            xMeters = currentX,
-                            yMeters = currentY,
-                            latitude = lastValidGpsLat,
-                            longitude = lastValidGpsLon,
-                            speedMps = predictedSpeedMps,
-                            bearingDegrees = currentHeading,
-                            driftEstimateMeters = drDriftAccumulator,
-                            sensorHealth = "Pod 1 ML Speed Active • Pod 2 Gyro Integrated",
-                            stepCount = drStepCount,
-                            totalDistanceMeters = drAccumulatedDistance
-                        )
-                    }
-
-                    appendTrajectoryPoint(currentX, currentY)
-                } else if (_navState.value == NavState.GNSS_LOCKED) {
-                    drDriftAccumulator = 0.6f
-                }
+    private fun syncNavState() {
+        if (_navState.value != NavState.CALIBRATING) {
+            val isGpsActive = gpsDetector.gpsAvailable.value && !isManualOutageOverride
+            val targetState = if (isGpsActive) NavState.GNSS_LOCKED else NavState.AI_DEAD_RECKONING
+            if (_navState.value != targetState) {
+                _navState.value = targetState
             }
         }
     }
@@ -252,14 +253,7 @@ class NavigationViewModel(application: Application) : AndroidViewModel(applicati
      */
     fun toggleGpsOutage() {
         isManualOutageOverride = !isManualOutageOverride
-        if (isManualOutageOverride) {
-            _navState.value = NavState.AI_DEAD_RECKONING
-        } else {
-            val now = System.currentTimeMillis()
-            val isGpsHealthy = (now - lastGpsFixTimestampMs) <= 1000L &&
-                    _gpsTelemetry.value.accuracyMeters <= 20.0f
-            _navState.value = if (isGpsHealthy) NavState.GNSS_LOCKED else NavState.AI_DEAD_RECKONING
-        }
+        syncNavState()
     }
 
     /**
@@ -267,19 +261,15 @@ class NavigationViewModel(application: Application) : AndroidViewModel(applicati
      */
     fun recalibrateImu() {
         viewModelScope.launch {
-            val previousState = _navState.value
             _navState.value = NavState.CALIBRATING
 
             delay(1200)
 
-            // Reset local origin to current GPS location
             if (_gpsTelemetry.value.isValid) {
                 anchorLatitude = _gpsTelemetry.value.latitude
                 anchorLongitude = _gpsTelemetry.value.longitude
             }
-            currentX = 0f
-            currentY = 0f
-            drAccumulatedDistance = 0f
+            kf.reset(0.0, 0.0)
 
             _telemetryState.update {
                 it.copy(
@@ -290,7 +280,7 @@ class NavigationViewModel(application: Application) : AndroidViewModel(applicati
                 )
             }
             _trajectoryHistory.value = listOf(Pair(0f, 0f))
-            _navState.value = if (previousState == NavState.CALIBRATING) NavState.GNSS_LOCKED else previousState
+            syncNavState()
         }
     }
 
@@ -300,28 +290,33 @@ class NavigationViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
-    /**
-     * Transforms geographic Latitude/Longitude to local Cartesian ENU coordinates (X, Y in meters).
-     */
-    private fun latLonToEnuMeters(
-        lat: Double,
-        lon: Double,
-        refLat: Double,
-        refLon: Double
-    ): Pair<Float, Float> {
+    private fun calculateVariance(list: List<Float>): Float {
+        if (list.isEmpty()) return 0f
+        val mean = list.average().toFloat()
+        return list.map { (it - mean) * (it - mean) }.average().toFloat()
+    }
+
+    private fun latLonToEnuMeters(lat: Double, lon: Double, refLat: Double, refLon: Double): Pair<Double, Double> {
         val latRad = Math.toRadians(refLat)
         val metersPerLatDegree = 111320.0
         val metersPerLonDegree = 111320.0 * cos(latRad)
 
-        val xMeters = ((lon - refLon) * metersPerLonDegree).toFloat()
-        val yMeters = (-(lat - refLat) * metersPerLatDegree).toFloat() // Invert Y for screen up
+        val xMeters = (lon - refLon) * metersPerLonDegree
+        val yMeters = -(lat - refLat) * metersPerLatDegree
 
         return Pair(xMeters, yMeters)
+    }
+
+    private fun enuMetersToLatLon(xMeters: Double, yMeters: Double, refLat: Double, refLon: Double): Pair<Double, Double> {
+        val latRad = Math.toRadians(refLat)
+        val lat = refLat - (yMeters / 111320.0)
+        val lon = refLon + (xMeters / (111320.0 * cos(latRad)))
+        return Pair(lat, lon)
     }
 
     override fun onCleared() {
         super.onCleared()
         gpsWatchdogJob?.cancel()
-        deadReckoningJob?.cancel()
+        speedInference.close()
     }
 }
