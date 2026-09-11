@@ -13,9 +13,12 @@ package com.example.deadreckoningsystem.model
 data class ImuData(
     val accelX: Float = 0f,
     val accelY: Float = 0f,
-    val accelZ: Float = 9.81f,
+    val accelZ: Float = 0f, // 0 in linear/gravity-free frame
     val gyroX: Float = 0f,
     val gyroY: Float = 0f,
     val gyroZ: Float = 0f,
+    val yawRad: Float = 0f,
+    val pitchRad: Float = 0f,
+    val rollRad: Float = 0f,
     val timestampNs: Long = System.nanoTime()
 )

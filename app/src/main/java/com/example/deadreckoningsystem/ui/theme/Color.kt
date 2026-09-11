@@ -8,6 +8,12 @@ val NavySurface = Color(0xFF1C2541)
 val NavySurfaceVariant = Color(0xFF2B3A67)
 val SlateBorder = Color(0xFF3A506B)
 
+// Logo & Opening Canvas Palette
+val LogoCanvasBg = Color(0xFFEEEFF1)
+val LogoDeepTeal = Color(0xFF1B3842)
+val LogoSlateAccent = Color(0xFF385764)
+val LogoCardBg = Color(0xFFE2E5E9)
+
 // Accents & State Indicators
 val NeonCyan = Color(0xFF00F5D4)
 val NeonGreen = Color(0xFF00E676)

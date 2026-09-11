@@ -39,6 +39,7 @@ class NavigationViewModel(application: Application) : AndroidViewModel(applicati
     )
     val kf = KalmanFilter()
     private val speedInference = SpeedPriorInference(application)
+    val recalibrator = com.example.deadreckoningsystem.filter.RetrospectiveRecalibrator()
 
     // Navigation State Machine
     private val _navState = MutableStateFlow(NavState.GNSS_LOCKED)
@@ -67,6 +68,8 @@ class NavigationViewModel(application: Application) : AndroidViewModel(applicati
     // Anchor origin for local Cartesian ENU projection (meters)
     private var anchorLatitude: Double? = null
     private var anchorLongitude: Double? = null
+    private val _anchorLocation = MutableStateFlow<Pair<Double, Double>?>(null)
+    val anchorLocation: StateFlow<Pair<Double, Double>?> = _anchorLocation.asStateFlow()
 
     // Rolling variance history for ZUPT detection
     private val accelHistory = ArrayDeque<Float>()
@@ -108,6 +111,7 @@ class NavigationViewModel(application: Application) : AndroidViewModel(applicati
                 if (isGoodQuality && (anchorLatitude == null || anchorLongitude == null)) {
                     anchorLatitude = gpsSample.latitude
                     anchorLongitude = gpsSample.longitude
+                    _anchorLocation.value = Pair(gpsSample.latitude, gpsSample.longitude)
                     kf.reset(0.0, 0.0)
                 }
 
@@ -131,7 +135,7 @@ class NavigationViewModel(application: Application) : AndroidViewModel(applicati
         val dt = ((nowNs - lastImuTimestampNs) / 1e9).coerceIn(0.005, 0.05) // 5ms..50ms
         lastImuTimestampNs = nowNs
 
-        // 1. ZUPT Stationary Detection from rolling variance
+        // 1. ZUPT Stationary Detection from rolling linear acceleration variance
         val accMag = sqrt((imuSample.accelX * imuSample.accelX + imuSample.accelY * imuSample.accelY + imuSample.accelZ * imuSample.accelZ).toDouble()).toFloat()
         accelHistory.addLast(accMag)
         if (accelHistory.size > 10) accelHistory.removeFirst()
@@ -142,7 +146,8 @@ class NavigationViewModel(application: Application) : AndroidViewModel(applicati
 
         val accVar = calculateVariance(accelHistory)
         val gyroVar = calculateVariance(gyroHistory)
-        val stationary = accVar < 0.15f && gyroVar < 0.03f && abs(accMag - 9.81f) < 1.0f
+        // With gravity removed, stationary linear acceleration magnitude is near 0
+        val stationary = accVar < 0.15f && gyroVar < 0.03f && accMag < 0.8f
 
         // 2. Read GPS state & outage status
         val rawGps = _gpsTelemetry.value
@@ -164,7 +169,12 @@ class NavigationViewModel(application: Application) : AndroidViewModel(applicati
             Pair(null, 64.0f)
         }
 
-        val rawYawRad = Math.atan2(imuSample.accelY.toDouble(), imuSample.accelX.toDouble())
+        // True compass yaw heading in ENU math convention (0 = East, CCW+)
+        // Derived from device rotation vector: yaw = (PI/2 - azimuth)
+        val rawYawRad = kotlin.math.atan2(
+            kotlin.math.sin(Math.PI / 2.0 - imuSample.yawRad.toDouble()),
+            kotlin.math.cos(Math.PI / 2.0 - imuSample.yawRad.toDouble())
+        )
 
         // 4. Tick Kalman Filter with continuous 5-branch logic
         kf.tick(
@@ -221,7 +231,13 @@ class NavigationViewModel(application: Application) : AndroidViewModel(applicati
         }
 
         appendTrajectoryPoint(px, py)
+
+        if (recalibrator.isBlackoutActive) {
+            recalibrator.recordStep(px, py, speedMps, dt.toFloat())
+        }
     }
+
+    private var blackoutStartIndex: Int = 0
 
     /**
      * Periodic watchdog checking GPS fix staleness.
@@ -244,8 +260,31 @@ class NavigationViewModel(application: Application) : AndroidViewModel(applicati
         if (_navState.value != NavState.CALIBRATING) {
             val isGpsActive = gpsDetector.gpsAvailable.value && !_isManualGpsDisabled.value
             val targetState = if (isGpsActive) NavState.GNSS_LOCKED else NavState.AI_DEAD_RECKONING
+
             if (_navState.value != targetState) {
+                val prevState = _navState.value
                 _navState.value = targetState
+
+                // Stage 7 Retrospective Recalibration Triggers
+                if (prevState == NavState.GNSS_LOCKED && targetState == NavState.AI_DEAD_RECKONING) {
+                    // Entering blackout: anchor start of segment
+                    blackoutStartIndex = _trajectoryHistory.value.size
+                    recalibrator.onBlackoutStarted(kf.x[0].toFloat(), kf.x[1].toFloat())
+                } else if (prevState == NavState.AI_DEAD_RECKONING && targetState == NavState.GNSS_LOCKED) {
+                    // Exiting blackout: reacquired GPS, recalibrate tunnel segment
+                    val rawGps = _gpsTelemetry.value
+                    if (anchorLatitude != null && anchorLongitude != null && rawGps.isValid) {
+                        val (reacquiredX, reacquiredY) = latLonToEnuMeters(rawGps.latitude, rawGps.longitude, anchorLatitude!!, anchorLongitude!!)
+                        val recalibratedSegment = recalibrator.onGpsReacquired(reacquiredX.toFloat(), reacquiredY.toFloat())
+                        if (recalibratedSegment.isNotEmpty()) {
+                            _trajectoryHistory.update { history ->
+                                (history.take(blackoutStartIndex) + recalibratedSegment).takeLast(250)
+                            }
+                        }
+                    } else {
+                        recalibrator.reset()
+                    }
+                }
             }
         }
     }
@@ -270,8 +309,10 @@ class NavigationViewModel(application: Application) : AndroidViewModel(applicati
             if (_gpsTelemetry.value.isValid) {
                 anchorLatitude = _gpsTelemetry.value.latitude
                 anchorLongitude = _gpsTelemetry.value.longitude
+                _anchorLocation.value = Pair(_gpsTelemetry.value.latitude, _gpsTelemetry.value.longitude)
             }
             kf.reset(0.0, 0.0)
+            recalibrator.reset()
 
             _telemetryState.update {
                 it.copy(
@@ -304,14 +345,14 @@ class NavigationViewModel(application: Application) : AndroidViewModel(applicati
         val metersPerLonDegree = 111320.0 * cos(latRad)
 
         val xMeters = (lon - refLon) * metersPerLonDegree
-        val yMeters = -(lat - refLat) * metersPerLatDegree
+        val yMeters = (lat - refLat) * metersPerLatDegree
 
         return Pair(xMeters, yMeters)
     }
 
     private fun enuMetersToLatLon(xMeters: Double, yMeters: Double, refLat: Double, refLon: Double): Pair<Double, Double> {
         val latRad = Math.toRadians(refLat)
-        val lat = refLat - (yMeters / 111320.0)
+        val lat = refLat + (yMeters / 111320.0)
         val lon = refLon + (xMeters / (111320.0 * cos(latRad)))
         return Pair(lat, lon)
     }

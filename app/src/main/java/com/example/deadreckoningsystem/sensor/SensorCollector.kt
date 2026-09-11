@@ -44,37 +44,74 @@ class SensorCollector(private val context: Context) {
             return@callbackFlow
         }
 
-        val accelSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
-            ?: sensorManager.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION)
+        val linearAccelSensor = sensorManager.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION)
+            ?: sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
         val gyroSensor = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
+        val rotationVectorSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
+            ?: sensorManager.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR)
 
-        val lastAccel = FloatArray(3)
+        val lastLinearAccel = FloatArray(3)
         val lastGyro = FloatArray(3)
+        val rotationMatrix = FloatArray(9).apply {
+            this[0] = 1f; this[4] = 1f; this[8] = 1f // Identity default
+        }
+        val orientationValues = FloatArray(3)
+        var hasRotation = false
+
+        // Low-pass filter for gravity if linear acceleration sensor isn't available directly
+        val isRawAccel = linearAccelSensor?.type == Sensor.TYPE_ACCELEROMETER
+        val gravity = FloatArray(3)
 
         val listener = object : SensorEventListener {
             override fun onSensorChanged(event: SensorEvent?) {
                 event ?: return
                 when (event.sensor.type) {
-                    Sensor.TYPE_ACCELEROMETER, Sensor.TYPE_LINEAR_ACCELERATION -> {
-                        lastAccel[0] = event.values[0]
-                        lastAccel[1] = event.values[1]
-                        lastAccel[2] = event.values[2]
+                    Sensor.TYPE_LINEAR_ACCELERATION -> {
+                        lastLinearAccel[0] = event.values[0]
+                        lastLinearAccel[1] = event.values[1]
+                        lastLinearAccel[2] = event.values[2]
+                    }
+                    Sensor.TYPE_ACCELEROMETER -> {
+                        if (isRawAccel) {
+                            // Standard 90% alpha filter to isolate dynamic linear acceleration from 1G gravity
+                            val alpha = 0.8f
+                            gravity[0] = alpha * gravity[0] + (1 - alpha) * event.values[0]
+                            gravity[1] = alpha * gravity[1] + (1 - alpha) * event.values[1]
+                            gravity[2] = alpha * gravity[2] + (1 - alpha) * event.values[2]
+
+                            lastLinearAccel[0] = event.values[0] - gravity[0]
+                            lastLinearAccel[1] = event.values[1] - gravity[1]
+                            lastLinearAccel[2] = event.values[2] - gravity[2]
+                        }
                     }
                     Sensor.TYPE_GYROSCOPE -> {
                         lastGyro[0] = event.values[0]
                         lastGyro[1] = event.values[1]
                         lastGyro[2] = event.values[2]
                     }
+                    Sensor.TYPE_ROTATION_VECTOR, Sensor.TYPE_GAME_ROTATION_VECTOR -> {
+                        SensorManager.getRotationMatrixFromVector(rotationMatrix, event.values)
+                        SensorManager.getOrientation(rotationMatrix, orientationValues)
+                        hasRotation = true
+                    }
                 }
+
+                // Transform body linear acceleration into world frame (East-North-Up) using rotation matrix
+                val worldAx = rotationMatrix[0] * lastLinearAccel[0] + rotationMatrix[1] * lastLinearAccel[1] + rotationMatrix[2] * lastLinearAccel[2]
+                val worldAy = rotationMatrix[3] * lastLinearAccel[0] + rotationMatrix[4] * lastLinearAccel[1] + rotationMatrix[5] * lastLinearAccel[2]
+                val worldAz = rotationMatrix[6] * lastLinearAccel[0] + rotationMatrix[7] * lastLinearAccel[1] + rotationMatrix[8] * lastLinearAccel[2]
 
                 trySend(
                     ImuData(
-                        accelX = lastAccel[0],
-                        accelY = lastAccel[1],
-                        accelZ = lastAccel[2],
+                        accelX = if (hasRotation) worldAx else lastLinearAccel[0],
+                        accelY = if (hasRotation) worldAy else lastLinearAccel[1],
+                        accelZ = if (hasRotation) worldAz else lastLinearAccel[2],
                         gyroX = lastGyro[0],
                         gyroY = lastGyro[1],
                         gyroZ = lastGyro[2],
+                        yawRad = orientationValues[0], // Azimuth (-PI to +PI)
+                        pitchRad = orientationValues[1],
+                        rollRad = orientationValues[2],
                         timestampNs = event.timestamp
                     )
                 )
@@ -83,10 +120,13 @@ class SensorCollector(private val context: Context) {
             override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
         }
 
-        accelSensor?.let {
+        linearAccelSensor?.let {
             sensorManager.registerListener(listener, it, SensorManager.SENSOR_DELAY_GAME)
         }
         gyroSensor?.let {
+            sensorManager.registerListener(listener, it, SensorManager.SENSOR_DELAY_GAME)
+        }
+        rotationVectorSensor?.let {
             sensorManager.registerListener(listener, it, SensorManager.SENSOR_DELAY_GAME)
         }
 

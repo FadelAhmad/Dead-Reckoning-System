@@ -23,7 +23,7 @@ android {
 
     packaging {
         jniLibs {
-            useLegacyPackaging = true
+            useLegacyPackaging = false
         }
     }
 
@@ -45,10 +45,6 @@ android {
     }
 }
 
-configurations.all {
-    exclude(group = "androidx.graphics", module = "graphics-path")
-}
-
 dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.appcompat)
@@ -56,7 +52,8 @@ dependencies {
     implementation(libs.play.services.location)
     implementation(libs.play.services.maps)
     implementation(libs.maps.compose)
-    implementation(libs.play.services.tflite.java)
+    implementation(libs.litert)
+    implementation(libs.litert.api)
     implementation(libs.androidx.graphics.path)
 
     implementation(platform(libs.androidx.compose.bom))

@@ -35,13 +35,17 @@ import com.example.deadreckoningsystem.ui.theme.SlateDarkBg
 import com.example.deadreckoningsystem.ui.theme.TextMuted
 import com.example.deadreckoningsystem.ui.theme.TextPrimary
 
+import androidx.compose.material.icons.filled.Sync
+import com.example.deadreckoningsystem.ui.theme.NeonCyan
+
 /**
- * Bottom Control Panel containing the manual "Use GPS" toggle button.
+ * Bottom Control Panel containing the manual "Use GPS" toggle button and "Recalibrate IMU" button.
  */
 @Composable
 fun BottomControlPanel(
     isManualGpsDisabled: Boolean,
     onToggleUseGps: () -> Unit,
+    onRecalibrateImu: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     // If NOT disabled manually, the user WANTS to use GPS.
@@ -57,7 +61,7 @@ fun BottomControlPanel(
         label = "GpsButtonBorder"
     )
 
-    val headerText = if (isGpsActive) "GPS ACTIVE" else "GPS INACTIVE"
+    val headerText = if (isGpsActive) "GNSS SATELLITE LOCK: ACTIVE" else "DEAD RECKONING MODE: MANUAL OVERRIDE"
     val headerColor = if (isGpsActive) NeonGreen else AmberWarning
 
     Card(
@@ -88,13 +92,13 @@ fun BottomControlPanel(
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.Center,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 // "Use GPS" Toggle Button
                 OutlinedButton(
                     onClick = onToggleUseGps,
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.weight(1.3f),
                     shape = RoundedCornerShape(14.dp),
                     colors = ButtonDefaults.outlinedButtonColors(
                         containerColor = buttonBg,
@@ -111,13 +115,45 @@ fun BottomControlPanel(
                             contentDescription = "Toggle Use GPS",
                             tint = if (isGpsActive) NeonGreen else TextMuted
                         )
-                        Spacer(modifier = Modifier.width(8.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
                         Text(
                             text = if (isGpsActive) "USE GPS: ON" else "USE GPS: OFF",
                             style = MaterialTheme.typography.labelMedium.copy(
                                 fontWeight = FontWeight.Bold,
-                                fontSize = 13.sp,
+                                fontSize = 12.sp,
                                 color = if (isGpsActive) NeonGreen else TextMuted
+                            )
+                        )
+                    }
+                }
+
+                // "Recalibrate IMU" Button
+                OutlinedButton(
+                    onClick = onRecalibrateImu,
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        containerColor = NeonCyan.copy(alpha = 0.15f),
+                        contentColor = TextPrimary
+                    ),
+                    border = androidx.compose.foundation.BorderStroke(1.5.dp, NeonCyan.copy(alpha = 0.6f))
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Sync,
+                            contentDescription = "Recalibrate IMU",
+                            tint = NeonCyan
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "CALIBRATE",
+                            style = MaterialTheme.typography.labelMedium.copy(
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 12.sp,
+                                color = NeonCyan
                             )
                         )
                     }

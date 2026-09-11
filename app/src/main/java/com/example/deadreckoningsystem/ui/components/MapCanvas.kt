@@ -46,6 +46,7 @@ fun MapCanvas(
     telemetry: VehicleTelemetry,
     navState: NavState,
     trajectoryHistory: List<Pair<Float, Float>>,
+    anchorLocation: Pair<Double, Double>? = null,
     modifier: Modifier = Modifier
 ) {
     val vehicleLatLng = remember(telemetry.latitude, telemetry.longitude) {
@@ -80,11 +81,12 @@ fun MapCanvas(
                 mapToolbarEnabled = false
             )
         ) {
-            // Trajectory Polyline Path
+            // Trajectory Polyline Path anchored to session origin
             if (trajectoryHistory.size > 1) {
-                val polylinePoints = remember(trajectoryHistory) {
+                val anchor = anchorLocation ?: Pair(telemetry.latitude, telemetry.longitude)
+                val polylinePoints = remember(trajectoryHistory, anchor) {
                     trajectoryHistory.map { (x, y) ->
-                        enuMetersToLatLon(x.toDouble(), y.toDouble(), telemetry.latitude, telemetry.longitude)
+                        enuMetersToLatLon(x.toDouble(), y.toDouble(), anchor.first, anchor.second)
                     }
                 }
 
@@ -142,7 +144,7 @@ fun MapCanvas(
 
 private fun enuMetersToLatLon(xMeters: Double, yMeters: Double, refLat: Double, refLon: Double): LatLng {
     val latRad = Math.toRadians(refLat)
-    val lat = refLat - (yMeters / 111320.0)
+    val lat = refLat + (yMeters / 111320.0) // Positive North
     val lon = refLon + (xMeters / (111320.0 * cos(latRad)))
     return LatLng(lat, lon)
 }

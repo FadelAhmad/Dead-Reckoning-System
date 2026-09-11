@@ -7,15 +7,22 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.Crossfade
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import com.example.deadreckoningsystem.ui.NavigationScreen
+import com.example.deadreckoningsystem.ui.OpeningScreen
 import com.example.deadreckoningsystem.ui.theme.DeadReckoningTheme
+import com.example.deadreckoningsystem.ui.theme.LogoCanvasBg
 import com.example.deadreckoningsystem.ui.theme.SlateDarkBg
 
 class MainActivity : ComponentActivity() {
@@ -35,11 +42,31 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             DeadReckoningTheme {
-                Surface(
-                    modifier = Modifier.fillMaxSize(),
-                    color = SlateDarkBg
-                ) {
-                    NavigationScreen()
+                var showOpeningScreen by rememberSaveable { mutableStateOf(true) }
+
+                Crossfade(
+                    targetState = showOpeningScreen,
+                    label = "AppScreenTransition"
+                ) { isOpening ->
+                    if (isOpening) {
+                        Surface(
+                            modifier = Modifier.fillMaxSize(),
+                            color = LogoCanvasBg
+                        ) {
+                            OpeningScreen(
+                                onStartNavigation = { showOpeningScreen = false }
+                            )
+                        }
+                    } else {
+                        Surface(
+                            modifier = Modifier.fillMaxSize(),
+                            color = SlateDarkBg
+                        ) {
+                            NavigationScreen(
+                                onShowOpeningScreen = { showOpeningScreen = true }
+                            )
+                        }
+                    }
                 }
             }
         }

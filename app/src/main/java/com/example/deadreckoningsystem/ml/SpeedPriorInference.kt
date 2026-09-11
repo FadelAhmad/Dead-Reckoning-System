@@ -1,49 +1,56 @@
 package com.example.deadreckoningsystem.ml
 
 import android.content.Context
+import android.util.Log
 import com.example.deadreckoningsystem.model.ImuData
-import com.google.android.gms.tflite.java.TfLite
-import org.tensorflow.lite.InterpreterApi
-import org.tensorflow.lite.InterpreterFactory
+import org.tensorflow.lite.Interpreter
 import java.io.FileInputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.channels.FileChannel
 
 /**
- * Play Services TFLite Model Wrapper for `imu_speed_prior_transformer.tflite`.
+ * Standalone Offline TFLite Model Wrapper for `imu_speed_prior_transformer.tflite`.
  * Evaluates rolling windows of 6-axis IMU features to predict forward vehicle speed (m/s)
- * and optional learned measurement covariance (R_speed).
+ * using an on-device 1D-CNN + Transformer Attention architecture.
+ *
+ * Model Input Shape:  [1, 30, 6] (Batch=1, TimeSteps=30, Channels=6)
+ * Model Output Shape: [1, 1] (Predicted forward speed in km/h)
  */
 class SpeedPriorInference(context: Context, modelAssetPath: String = "imu_speed_prior_transformer.tflite") {
 
-    private var interpreter: InterpreterApi? = null
-    private val windowSize = 10 // Rolling IMU window size
-    private val featureSize = 6 // [acc_fwd, acc_lat, acc_vert, gyro_yaw, gyro_pitch, gyro_roll]
+    companion object {
+        private const val TAG = "SpeedPriorInference"
+        const val WINDOW_SIZE = 30 // Rolling IMU window size (matches model input shape [1, 30, 6])
+        const val FEATURE_SIZE = 6 // [acc_fwd, acc_lat, acc_vert, gyro_yaw, gyro_pitch, gyro_roll]
+        private const val DEFAULT_R_SPEED = 16.0f // (4.0 m/s)^2 measurement variance
+    }
 
+    private var interpreter: Interpreter? = null
     private val imuWindow = ArrayDeque<ImuData>()
 
     init {
         try {
-            TfLite.initialize(context).addOnSuccessListener {
-                try {
-                    val modelBuffer = loadModelFile(context, modelAssetPath)
-                    val options = InterpreterApi.Options()
-                    interpreter = InterpreterFactory().create(modelBuffer, options)
-                } catch (_: Exception) {}
+            val modelBuffer = loadModelFile(context, modelAssetPath)
+            val options = Interpreter.Options().apply {
+                setNumThreads(2)
             }
-        } catch (_: Exception) {
+            interpreter = Interpreter(modelBuffer, options)
+            Log.i(TAG, "Successfully loaded standalone TFLite model: $modelAssetPath")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to initialize standalone TFLite interpreter", e)
             interpreter = null
         }
     }
 
     private fun loadModelFile(context: Context, assetPath: String): ByteBuffer {
         val fileDescriptor = context.assets.openFd(assetPath)
-        val inputStream = FileInputStream(fileDescriptor.fileDescriptor)
-        val fileChannel = inputStream.channel
-        val startOffset = fileDescriptor.startOffset
-        val declaredLength = fileDescriptor.declaredLength
-        return fileChannel.map(FileChannel.MapMode.READ_ONLY, startOffset, declaredLength)
+        FileInputStream(fileDescriptor.fileDescriptor).use { inputStream ->
+            val fileChannel = inputStream.channel
+            val startOffset = fileDescriptor.startOffset
+            val declaredLength = fileDescriptor.declaredLength
+            return fileChannel.map(FileChannel.MapMode.READ_ONLY, startOffset, declaredLength)
+        }
     }
 
     /**
@@ -51,56 +58,47 @@ class SpeedPriorInference(context: Context, modelAssetPath: String = "imu_speed_
      */
     fun pushImuSample(imuData: ImuData) {
         imuWindow.addLast(imuData)
-        if (imuWindow.size > windowSize) {
+        if (imuWindow.size > WINDOW_SIZE) {
             imuWindow.removeFirst()
         }
     }
 
     /**
      * Predicts vehicle forward speed in m/s and estimated measurement variance R_speed.
-     * @return Pair(speedMps, rSpeed)
+     * @return Pair(speedMps, rSpeedVariance)
      */
     fun predictSpeedMps(): Pair<Float, Float> {
-        val interp = interpreter ?: return Pair(fallbackSpeedFromWindow(), 64.0f) // 8.0^2 fallback
-        if (imuWindow.size < windowSize) {
+        val interp = interpreter ?: return Pair(fallbackSpeedFromWindow(), 64.0f)
+        if (imuWindow.size < WINDOW_SIZE) {
             return Pair(fallbackSpeedFromWindow(), 64.0f)
         }
 
         try {
-            val inputBuffer = ByteBuffer.allocateDirect(1 * windowSize * featureSize * 4).apply {
+            // 1 batch * 30 timesteps * 6 features * 4 bytes/float = 720 bytes
+            val inputBuffer = ByteBuffer.allocateDirect(1 * WINDOW_SIZE * FEATURE_SIZE * 4).apply {
                 order(ByteOrder.nativeOrder())
             }
 
             for (sample in imuWindow) {
-                inputBuffer.putFloat(sample.accelX)
-                inputBuffer.putFloat(sample.accelY)
-                inputBuffer.putFloat(sample.accelZ)
-                inputBuffer.putFloat(sample.gyroZ) // gyro_yaw
-                inputBuffer.putFloat(sample.gyroY) // gyro_pitch
-                inputBuffer.putFloat(sample.gyroX) // gyro_roll
+                inputBuffer.putFloat(sample.accelX) // acc_forward
+                inputBuffer.putFloat(sample.accelY) // acc_lateral
+                inputBuffer.putFloat(sample.accelZ) // acc_vertical
+                inputBuffer.putFloat(sample.gyroZ)  // gyro_yaw
+                inputBuffer.putFloat(sample.gyroY)  // gyro_pitch
+                inputBuffer.putFloat(sample.gyroX)  // gyro_roll
             }
             inputBuffer.rewind()
 
-            val outputBuffer = Array(1) { FloatArray(2) } // [predicted_speed_kmh, r_speed_log_val]
-            val outputs = HashMap<Int, Any>()
-            outputs[0] = outputBuffer
-
-            val inputs = arrayOf<Any>(inputBuffer)
-            interp.runForMultipleInputsOutputs(inputs, outputs)
+            // Output shape is [1, 1]: predicted speed in km/h
+            val outputBuffer = Array(1) { FloatArray(1) }
+            interp.run(inputBuffer, outputBuffer)
 
             val predKmh = outputBuffer[0][0].coerceAtLeast(0.0f)
             val predMps = predKmh / 3.6f
 
-            val rSpeedVal = if (outputBuffer[0].size > 1) {
-                val logR = outputBuffer[0][1]
-                val valR = Math.expm1(logR.toDouble()).toFloat()
-                (valR * valR).coerceIn(0.1f, 100.0f)
-            } else {
-                64.0f
-            }
-
-            return Pair(predMps, rSpeedVal)
-        } catch (_: Exception) {
+            return Pair(predMps, DEFAULT_R_SPEED)
+        } catch (e: Exception) {
+            Log.w(TAG, "TFLite model inference error, using window fallback", e)
             return Pair(fallbackSpeedFromWindow(), 64.0f)
         }
     }
